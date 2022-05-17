@@ -9,3 +9,7 @@ analysis/*png
 analysis/*html
 analysis/*_cache
 analysis/site_libs
+data/Bassez*
+data/Qian*
+data/Azizi*
+output/Plots/*

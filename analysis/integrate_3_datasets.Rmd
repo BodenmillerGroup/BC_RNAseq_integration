@@ -1,0 +1,242 @@
+---
+title: "integrate_3_datasets"
+author: "SandraTietscher"
+date: "2022-05-13"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Load packages
+
+```{r load-packages}
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(ggpubr)
+```
+
+# Read in data
+
+```{r read-data}
+tietscher <- readRDS("data/final_seurat_object_filtered_noSCT.rds")
+bassez <- readRDS("data/Bassez2021_scRNAseq_data/Bassez_cohort1_seurat.rds")
+qian <- readRDS("data/Qian2020_scRNAseq_data/qian_seurat.rds")
+```
+
+# Prepare datasets
+
+```{r}
+# Add metadata column to indicate which dataset the cell belongs to
+bassez$dataset <- "bassez"
+tietscher$dataset <- "tietscher"
+qian$dataset <- "qian"
+
+# Unify cell type metadata
+unique(bassez$cellType)
+levels(tietscher$cell.type)
+qian$CellType <- factor(qian$CellType)
+levels(qian$CellType)
+
+bassez$cellType <- factor(bassez$cellType, levels=unique(bassez$cellType))
+
+levels(tietscher$cell.type) <- c("T_cell", "Myeloid_cell", "Fibroblast", "Endothelial_cell", "B_cell", "Cancer_cell", "Granulocyte", "Plasma_cell", "pDC")
+tietscher$cellType <- tietscher$cell.type
+tietscher$cell.type <- NULL
+
+levels(qian$CellType) <- c("B_cell", "Cancer_cell", "Myeloid_cell","Endothelial_cell", "Fibroblast", "Mast_cell", "Myeloid_cell",  "T_cell")
+qian$cellType <- qian$CellType
+qian$CellType <- NULL
+```
+
+# Subset immune cells
+
+Full dataset integration uses too much memory does not run on this VM.
+Randomly subsample each dataset to 20000 cells (except Qian, which only has 19782 immune cells).
+
+```{r subsetting}
+bassez_immune <- subset(bassez, cellType %in% c("Myeloid_cell", "T_cell", "pDC", "B_cell", "Mast_cell"))
+tietscher_immune <- subset(tietscher, cellType %in% c("Myeloid_cell", "T_cell", "pDC", "B_cell", "Granulocyte", "Plasma_cell"))
+qian_immune <- subset(qian, cellType %in% c("Myeloid_cell", "T_cell",  "B_cell", "Mast_cell"))
+
+bassez_sub <- bassez_immune[, sample(colnames(bassez_immune), size = 20000, replace=F)]
+tietscher_sub <- tietscher_immune[, sample(colnames(tietscher_immune), size = 20000, replace=F)]
+
+datasets_immune <- list(tietscher_sub, bassez_sub, qian_immune)
+```
+
+# Normalize and identify variable features
+
+```{r normalization}
+# normalize and identify variable features for each dataset independently
+datasets_immune <- lapply(X = datasets_immune, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = datasets_immune)
+```
+
+# Perform integration
+
+We then identify anchors using the FindIntegrationAnchors() function, which takes a list of Seurat objects as input, and use these anchors to integrate the two datasets together with IntegrateData().
+
+```{r integration}
+
+integr.anchors <- FindIntegrationAnchors(object.list = datasets_immune, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+datasets.combined <- IntegrateData(anchorset = integr.anchors)
+
+# specify that we will perform downstream analysis on the corrected data. Note that the original unmodified data still resides in the 'RNA' assay
+DefaultAssay(datasets.combined) <- "integrated"
+
+# store mitochondrial gene, Keratin and MGP percentage in object meta data --> will be regressed out in next step
+datasets.combined <- PercentageFeatureSet(datasets.combined, pattern = "^KRT", col.name = "percent.krt", assay = "RNA")
+datasets.combined <- PercentageFeatureSet(datasets.combined, pattern = "MGP", col.name = "percent.MGP", assay = "RNA")
+datasets.combined <- PercentageFeatureSet(datasets.combined, pattern = "^MT-", col.name = "percent.mt", assay = "RNA")
+
+saveRDS(datasets.combined, "data/immune_tietscher_bassez_qian_preCluster.rds")
+```
+
+# Run the standard workflow for visualization and clustering
+
+```{r}
+datasets.combined <- ScaleData(datasets.combined, verbose = FALSE, vars.to.regress = c("percent.mt", "percent.krt", "percent.MGP"))
+datasets.combined <- RunPCA(datasets.combined, npcs = 30, verbose = FALSE)
+datasets.combined <- RunUMAP(datasets.combined, reduction = "pca", dims = 1:30)
+datasets.combined <- FindNeighbors(datasets.combined, reduction = "pca", dims = 1:30)
+datasets.combined <- FindClusters(datasets.combined, resolution = 0.5)
+
+saveRDS(datasets.combined, "data/immune_tietscher_bassez_qian.rds")
+
+# Visualization
+#my_cols = brewer.pal(36)
+DimPlot(datasets.combined, reduction = "umap", group.by = "dataset", shuffle = TRUE, cols=alpha(c("darkgreen", "purple", "orange"),0.1))
+DimPlot(datasets.combined, reduction = "umap", label = TRUE, repel = TRUE)
+
+datasets.combined$dataset_celltype <- factor(paste(datasets.combined$dataset, datasets.combined$cellType, sep = "_"))
+#datasets.combined$dataset_celltype <- factor(datasets.combined$dataset_celltype, levels = levels(datasets.combined$dataset_celltype)[c(1,6,3,8,4,9,5,11,2,7,10)])
+DimPlot(datasets.combined, reduction = "umap", group.by = "dataset_celltype", shuffle = TRUE)
+# 
+# DefaultAssay(datasets.combined) <- "RNA"
+# FeaturePlot(datasets.combined, c("CD4", "CD7", "PDCD1", "CXCL13", "CD8A", "MKI67"))
+# FeaturePlot(datasets.combined, c("MKI67"))
+# 
+# #Adjust patient id metadata column
+# datasets.combined$patient_id <- ifelse(datasets.combined$dataset == "tietscher", datasets.combined$sample, datasets.combined$patient_id)
+
+```
+
+## Finding differentially expressed genes to annotate clusters
+
+```{r DE-analysis}
+cluster.markers <- FindAllMarkers(object = datasets.combined, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+write.csv(cluster.markers, file = "output/DE_cluster_3datasets_20000.csv", row.names = FALSE)
+
+```
+
+## Annotate clusters
+
+```{r}
+#Read in table with manual cluster annotation
+cluster.ids <- read.csv(file = "output/immune_cluster_annotation_3datasets.csv")
+
+#Save celltype information in metadata
+datasets.combined$integr_celltype <- cluster.ids$celltype[match(datasets.combined$integrated_snn_res.0.5, cluster.ids$cluster)]
+datasets.combined$integr_subtype <- cluster.ids$subtype[match(datasets.combined$integrated_snn_res.0.5, cluster.ids$cluster)]
+
+#Remove clusters with <250 cells (cluster 20)
+datasets.combined.full <- datasets.combined
+datasets.combined <- subset(x = datasets.combined.full, idents = c(0:19))
+
+
+# Display subtype proportions per dataset
+subtype.prop <- as.data.frame(prop.table(table(datasets.combined$integr_subtype, datasets.combined$dataset), margin = 1))
+colnames(subtype.prop) <- c("subtype", "dataset", "proportion")
+
+ggplot(subtype.prop, aes(proportion, y = subtype, fill=dataset)) +
+  geom_bar(stat="identity")+
+  scale_fill_manual(values = c("darkgreen", "purple", "orange"))+
+  theme(axis.title.x=element_blank(), axis.title.y = element_blank())+
+  theme(panel.background = element_blank(), axis.text.x = element_text(angle = 30))+
+  ggtitle('Cluster composition by dataset')
+
+# UMAP colored by clustername
+DimPlot(datasets.combined, reduction = "umap", group.by = "integr_subtype", shuffle = TRUE)
+```
+
+# Proportion of T cells that are exhausted
+
+```{r}
+#Fill patient_id metadata column for qian dataset
+datasets.combined$patient_id <- ifelse(is.na(datasets.combined$patient_id), paste0("QianPatient_", datasets.combined$PatientNumber), datasets.combined$patient_id)
+
+datasets.combined$integr_subtype <- factor(datasets.combined$integr_subtype)
+Idents(datasets.combined) <- datasets.combined$integr_subtype
+datasets.T <- subset(x = datasets.combined, integr_subtype %in% c("T_naive", "T_mixed_2", "T_mixed_1", "CD8_cytotoxic", "CD8_exhausted", "Treg", "Tfh", "T_proliferating"))
+
+prop.CD8exh <- prop.table(table(datasets.T$patient_id, datasets.T$integr_subtype), margin = 1)[,"CD8_exhausted"]
+prop.Tfh <- prop.table(table(datasets.T$patient_id, datasets.T$integr_subtype), margin = 1)[,"Tfh"]
+prop.Tfh.CD8exh <- prop.CD8exh + prop.Tfh
+
+
+# Read in table with epithelial HLAABC expression
+tab <- read.csv("output/epiHLAABC_patient_mean_3datasets.csv")
+tab$patient_id == names(prop.CD8exh)
+tab$prop.CD8exh <- prop.CD8exh
+tab$prop.Tfh <- prop.Tfh
+tab$prop.Tfh.CD8exh <- prop.Tfh.CD8exh
+
+# Plot correlation (1 line)
+ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=dataset)) +
+  geom_point()+
+  geom_smooth(method = lm, se=FALSE, color = "black")+
+  stat_cor(method="spearman", color = "black")+
+  scale_color_manual(values = c("darkgreen", "purple", "orange"))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+# Plot correlation (3 lines)
+ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=dataset)) +
+  geom_point()+
+  #geom_label(aes(label=patient_id))+
+  geom_smooth(method = lm, se=FALSE)+
+  stat_cor(method="spearman")+
+  scale_color_manual(values = c("darkgreen", "purple", "orange"))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+# Add IE info
+tab$IE <- datasets.combined$IE[match(tab$patient_id, datasets.combined$patient_id)]
+
+ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=IE)) +
+  geom_point()+
+  #geom_label(aes(label=patient_id))+
+  geom_smooth(method = lm, se=FALSE)+
+  stat_cor(method="spearman")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+```
+
+# Use cutoff on CD8
+
+```{r}
+
+```
+
+
+

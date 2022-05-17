@@ -1,0 +1,37 @@
+---
+title: "dataset_Bassez"
+author: "SandraTietscher"
+date: "2022-03-06"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Load packages
+
+```{r load-packages}
+library(Seurat)
+```
+
+# Read in data
+
+Read in full single-cell object of cohort 1: 29 primary BC patients (all subtypes) treated with anti-PD1 before surgery, samples taken pre and on-treatment; 175,942 cells total; 5’ scRNAseq + scTCR-seq
+
+```{r read-data}
+
+bassez_counts <- readRDS("data/Bassez2021_scRNAseq_data/1863-counts_cells_cohort1.rds")
+bassez_meta <- read.csv("data/Bassez2021_scRNAseq_data/1872-BIOKEY_metaData_cohort1_web.csv")
+rownames(bassez_meta) <- bassez_meta$Cell
+
+```
+
+# Create Seurat object
+
+```{r}
+
+bassez <- CreateSeuratObject(counts = bassez_counts, assay = "RNA",
+  meta.data = bassez_meta)
+
+saveRDS(bassez, "data/Bassez2021_scRNAseq_data/Bassez_cohort1_seurat.rds")
+```
+

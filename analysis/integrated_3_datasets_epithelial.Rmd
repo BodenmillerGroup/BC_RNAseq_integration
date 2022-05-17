@@ -1,0 +1,102 @@
+---
+title: "integrated_3_datasets_epithelial"
+author: "SandraTietscher"
+date: "2022-05-15"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Load packages
+
+```{r load-packages}
+library(Seurat)
+library(ggplot2)
+library(RColorBrewer)
+library(ggpubr)
+```
+
+# Read in data
+
+```{r read-data}
+tietscher <- readRDS("data/final_seurat_object_filtered_noSCT.rds")
+bassez <- readRDS("data/Bassez2021_scRNAseq_data/Bassez_cohort1_seurat.rds")
+qian <- readRDS("data/Qian2020_scRNAseq_data/qian_seurat.rds")
+```
+
+# Prepare datasets
+
+```{r prepare-datasets}
+# Add metadata column to indicate which dataset the cell belongs to
+bassez$dataset <- "bassez"
+tietscher$dataset <- "tietscher"
+qian$dataset <- "qian"
+
+```
+
+# Subset epithelial cells 
+
+Randomly subsample each dataset to 10000 cells.
+
+```{r}
+# Subset cancer cells for both datasets
+bassez_epi <- subset(bassez, cellType == "Cancer_cell")
+tietscher_epi <- subset(tietscher, cell.type == "epithelial")
+qian_epi <- subset(qian, CellType == "Cancer")
+
+# Harmonize patient metadata
+unique(bassez_epi$patient_id)
+tietscher_epi$patient_id <- tietscher_epi$sample
+qian_epi$patient_id <- paste0("QianPatient_", qian_epi$PatientNumber)
+
+bassez_sub <- bassez_epi[, sample(colnames(bassez_epi), size = 10000, replace=F)]
+tietscher_sub <- tietscher_epi[, sample(colnames(tietscher_epi), size = 10000, replace=F)]
+qian_sub <- qian_epi[, sample(colnames(qian_epi), size = 10000, replace=F)]
+
+datasets_epi <- list(tietscher_sub, bassez_sub, qian_sub)
+```
+
+
+# Normalize and identify variable features
+
+```{r normalization}
+# normalize and identify variable features for each dataset independently
+datasets_epi <- lapply(X = datasets_epi, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2500)
+})
+
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = datasets_epi, nfeatures = 2500)
+```
+
+# Perform integration
+
+We then identify anchors using the FindIntegrationAnchors() function, which takes a list of Seurat objects as input, and use these anchors to integrate the two datasets together with IntegrateData().
+
+```{r integration}
+integr.anchors <- FindIntegrationAnchors(object.list = datasets_epi, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+datasets.combined <- IntegrateData(anchorset = integr.anchors)
+
+# specify that we will perform downstream analysis on the corrected data. Note that the original unmodified data still resides in the 'RNA' assay
+DefaultAssay(datasets.combined) <- "integrated"
+
+saveRDS(datasets.combined, "data/epithelial_tietscher_bassez_qian_10000cells.rds")
+```
+
+# Average epithelial HLA-ABC expression per patient
+
+```{r}
+# Sum up integrated scaled counts for HLA-A, HLA-B and HLA-C
+datasets.combined$HLAABC_counts <- colSums(datasets.combined@assays$integrated@data[c("HLA-A", "HLA-B"),])
+
+# Average over patients and add dataset information
+colData <- datasets.combined@meta.data
+HLAABC_mean <- colData %>% group_by(patient_id) %>% dplyr::summarise(mean = mean(HLAABC_counts))
+HLAABC_mean$dataset <- ifelse(grepl("BIOKEY", HLAABC_mean$patient_id), "bassez", ifelse(grepl("Qian", HLAABC_mean$patient_id), "qian", "tietscher"))
+
+write.csv(HLAABC_mean, "output/epiHLAABC_patient_mean_3datasets.csv")
+```
+

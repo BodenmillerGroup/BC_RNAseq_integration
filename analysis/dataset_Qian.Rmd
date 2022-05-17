@@ -1,0 +1,32 @@
+---
+title: "dataset_Qian"
+author: "SandraTietscher"
+date: "2022-05-09"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+## Load packages
+
+```{r load-packages}
+library(Seurat)
+```
+
+# Read in data and create Seurat object
+
+Read in full single-cell object: 14 treatment-naïve primary BCs, 44.000 cells (all cell types, of which 14.400 T cells), 5’ scRNA-seq (10x Genomics)
+
+```{r read-data}
+
+qian_counts <- Read10X("data/Qian2020_scRNAseq_data/2102-Breastcancer_counts.tar/2102-Breastcancer_counts/export/BC_counts")
+qian_meta <- read.csv("data/Qian2020_scRNAseq_data/2103-Breastcancer_metadata.csv/2103-Breastcancer_metadata.csv")
+rownames(qian_meta) <- qian_meta$Cell
+
+qian <- CreateSeuratObject(counts = qian_counts, assay = "RNA",
+  meta.data = qian_meta)
+
+saveRDS(qian, "data/Qian2020_scRNAseq_data/qian_seurat.rds")
+
+```
+
