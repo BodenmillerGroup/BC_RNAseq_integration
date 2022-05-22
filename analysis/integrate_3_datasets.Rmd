@@ -14,6 +14,8 @@ library(Seurat)
 library(ggplot2)
 library(RColorBrewer)
 library(ggpubr)
+library(dplyr)
+library(tidyr)
 ```
 
 # Read in data
@@ -112,20 +114,13 @@ datasets.combined <- FindClusters(datasets.combined, resolution = 0.5)
 saveRDS(datasets.combined, "data/immune_tietscher_bassez_qian.rds")
 
 # Visualization
-#my_cols = brewer.pal(36)
+my_cols = brewer.pal(12, "Paired")
 DimPlot(datasets.combined, reduction = "umap", group.by = "dataset", shuffle = TRUE, cols=alpha(c("darkgreen", "purple", "orange"),0.1))
 DimPlot(datasets.combined, reduction = "umap", label = TRUE, repel = TRUE)
 
-datasets.combined$dataset_celltype <- factor(paste(datasets.combined$dataset, datasets.combined$cellType, sep = "_"))
-#datasets.combined$dataset_celltype <- factor(datasets.combined$dataset_celltype, levels = levels(datasets.combined$dataset_celltype)[c(1,6,3,8,4,9,5,11,2,7,10)])
-DimPlot(datasets.combined, reduction = "umap", group.by = "dataset_celltype", shuffle = TRUE)
-# 
-# DefaultAssay(datasets.combined) <- "RNA"
-# FeaturePlot(datasets.combined, c("CD4", "CD7", "PDCD1", "CXCL13", "CD8A", "MKI67"))
-# FeaturePlot(datasets.combined, c("MKI67"))
-# 
-# #Adjust patient id metadata column
-# datasets.combined$patient_id <- ifelse(datasets.combined$dataset == "tietscher", datasets.combined$sample, datasets.combined$patient_id)
+datasets.combined$dataset_celltype <- factor(ifelse(datasets.combined$dataset == "tietscher", paste("tietscher", datasets.combined$cellType, sep = "_"), paste("qian/bassez", datasets.combined$cellType, sep = "_")))
+datasets.combined$dataset_celltype <- factor(datasets.combined$dataset_celltype, levels = levels(datasets.combined$dataset_celltype)[c(1,6,2,7,3,8,4,9,5,11,10)])
+DimPlot(datasets.combined, reduction = "umap", group.by = "dataset_celltype", cols=alpha(my_cols,0.8), shuffle = TRUE)
 
 ```
 
@@ -174,7 +169,6 @@ DimPlot(datasets.combined, reduction = "umap", group.by = "integr_subtype", shuf
 datasets.combined$patient_id <- ifelse(is.na(datasets.combined$patient_id), paste0("QianPatient_", datasets.combined$PatientNumber), datasets.combined$patient_id)
 
 datasets.combined$integr_subtype <- factor(datasets.combined$integr_subtype)
-Idents(datasets.combined) <- datasets.combined$integr_subtype
 datasets.T <- subset(x = datasets.combined, integr_subtype %in% c("T_naive", "T_mixed_2", "T_mixed_1", "CD8_cytotoxic", "CD8_exhausted", "Treg", "Tfh", "T_proliferating"))
 
 prop.CD8exh <- prop.table(table(datasets.T$patient_id, datasets.T$integr_subtype), margin = 1)[,"CD8_exhausted"]
@@ -232,10 +226,154 @@ ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=IE)) +
         panel.background = element_blank())
 ```
 
-# Use cutoff on CD8
+# Plot percentage of PDCD1+ T cells 
 
 ```{r}
+# Exclude QianPatient54 which has less than 20 T cells in total
+datasets.T <- subset(datasets.T, patient_id != "QianPatient_54")
 
+# Get proportion of PDCD1+ T cells for each sample
+PDCD1 <- subset(x=datasets.T, subset = PDCD1>0)
+Cell.nr.PDCD1 <- table(PDCD1$patient_id)
+Cell.nr.total <- table(datasets.T$patient_id)
+
+prop.PDCD1 <- Cell.nr.PDCD1/Cell.nr.total
+
+# Add to table
+tab$PDCD1prop <- prop.PDCD1[match(tab$patient_id, names(prop.PDCD1))]
+tab <- filter(tab, patient_id != "QianPatient_54")
+
+ggplot(tab, aes(mean, prop.PDCD1,color=IE)) +
+  geom_point()+
+  #geom_label(aes(label=patient_id))+
+  geom_smooth(method = lm, se=FALSE)+
+  stat_cor(method="spearman")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+```
+
+# Proportion out of all TNK cells
+
+```{r}
+datasets.TNK <- subset(x = datasets.combined, integr_celltype == "T_NK")
+
+proportions <- prop.table(table(datasets.TNK$patient_id, datasets.TNK$integr_subtype), margin = 1)
+
+prop.CD8exh <- proportions[,"CD8_exhausted"]
+prop.Tfh <- proportions[,"Tfh"]
+prop.proliferating <- proportions[,"T_proliferating"]
+
+prop.Tfh.CD8exh <- prop.CD8exh + prop.Tfh
+
+# Read in table with epithelial HLAABC expression
+tab <- read.csv("output/epiHLAABC_patient_mean_3datasets.csv")
+tab$patient_id == names(prop.CD8exh)
+tab$prop.CD8exh <- prop.CD8exh
+tab$prop.Tfh <- prop.Tfh
+tab$prop.Tfh.CD8exh <- prop.Tfh.CD8exh
+tab$prop.proliferating <- prop.proliferating
+
+# Plot correlation (1 line)
+ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=dataset)) +
+  geom_point()+
+  geom_smooth(method = lm, se=FALSE, color = "black")+
+  stat_cor(method="spearman", color = "black")+
+  scale_color_manual(values = c("darkgreen", "purple", "orange"))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+# Plot correlation (3 lines)
+ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=dataset)) +
+  geom_point()+
+  #geom_label(aes(label=patient_id))+
+  geom_smooth(method = lm, se=FALSE)+
+  stat_cor(method="spearman")+
+  scale_color_manual(values = c("darkgreen", "purple", "orange"))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+# Add IE info and select cutoff line
+tab$IE <- datasets.combined$IE[match(tab$patient_id, datasets.combined$patient_id)]
+
+ggplot(tab, aes(mean, prop.Tfh.CD8exh,color=IE)) +
+  geom_point()+
+  geom_hline(yintercept = 0.15, linetype = "dashed")+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+
+# Check correlation between CD8exh and proliferating T cells
+ggplot(tab, aes(prop.proliferating, prop.CD8exh,color=dataset)) +
+  geom_point()+
+  #geom_label(aes(label=patient_id))+
+  geom_smooth(method = lm, se=FALSE)+
+  stat_cor(method="spearman")+
+  scale_color_manual(values = c("darkgreen", "purple", "orange"))+
+  theme(axis.line.x = element_line(colour = "black", size = 0.25),
+        axis.line.y = element_line(colour = "black", size = 0.25),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, size=1),
+        panel.background = element_blank())
+```
+
+# Assign IE labels to Qian and Bassez samples
+
+Set cutoff at 15% CD8_exhausted + Tfh out of all T&NK cells.
+Note that this misclassifies one of the true IE1 samples from the Tietscher dataset (TBB165) - but we keep the original labels for this dataset.
+
+```{r}
+tab$IEassigned <- ifelse(!(is.na(tab$IE)), tab$IE, ifelse(tab$prop.Tfh.CD8exh > 0.15, "IE1", "IE2"))
+```
+
+# Compare the mean expression of selected markers between IE1 and IE2-assigned samples
+
+```{r}
+genes <- c("GZMB", "CSF1", "CXCL13")
+
+count.sum <- data.frame(matrix(nrow = length(unique(datasets.T$patient_id)), ncol = 3))
+colnames(count.sum) <- genes
+rownames(count.sum) <- unique(datasets.T$patient_id)[order(unique(datasets.T$patient_id))]
+
+counts <- datasets.T@assays$RNA[genes,]
+colnames(counts) <- paste(datasets.T$patient_id, colnames(counts), sep = "_")
+
+for (i in unique(datasets.T$patient_id)) {
+  count.sum[i,] <- rowSums(counts[,grep(i, colnames(counts))])
+}
+
+cellnr <- table(datasets.T$patient_id)
+names(cellnr) == rownames(count.sum)
+
+count.avg <- count.sum/cellnr
+count.avg$dataset <- datasets.T$dataset[match(rownames(count.avg), datasets.T$patient_id)]
+count.avg$IEassigned <- tab$IEassigned[match(rownames(count.avg), tab$patient_id)]
+count.avg$patient_id <- rownames(count.avg)
+count.avg <- pivot_longer(count.avg, 1:3, names_to = "genes", values_to = "avg_expression")
+
+ggplot(count.avg, aes(x=IEassigned, y=avg_expression, fill = IEassigned))+
+  geom_boxplot()+
+  facet_grid(rows = vars(genes), cols = vars(dataset), scales = "free")+
+  stat_compare_means(method = "wilcox.test")+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "black", fill="NA"))
 ```
 
 
