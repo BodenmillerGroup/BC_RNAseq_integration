@@ -32,6 +32,9 @@ bassez$dataset <- "bassez"
 tietscher$dataset <- "tietscher"
 qian$dataset <- "qian"
 
+# Exclude on-treatment samples from bassez dataset
+bassez <- subset(bassez, timepoint == "Pre")
+
 ```
 
 # Subset epithelial cells 
